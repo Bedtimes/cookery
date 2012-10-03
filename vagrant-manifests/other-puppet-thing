@@ -1,0 +1,128 @@
+# == Class: conman
+#
+# Simple Class to Install conman on a AWS Ubuntu 12.04 based instance.
+#
+# === Authors
+#
+# Marcus Martins <marcus.martins@saffrondigital.com>
+#
+# === Copyright
+#
+# Copyright 2012 Saffron Digital.
+#
+
+# Class conman with default parameters
+#
+# $requirements="/etc/puppet/modules/conman/templates/requirements.txt" - The location of the requirements.txt used by pip
+# $requirements_template="conman/requirements.txt" - The location of the template file used to generate the requirements file
+# $virtualenv_dir="/usr/service/conman", - The location of the directory used by the service
+# $initd_template="conman/init.d.sh" - The init script used to start the project
+# $settings_tempate="conman/settings.py" - The django settings file template
+# $defaults_template="conman/defaults.sh", - The django default to start the service
+# $broker_user="conman_user" - the user to authenticate with celery
+# $broker_vhost="conman" - the vhost
+# $broker_password="hjk321aags"
+# $broker_host="ec2-23-22-85-144.compute-1.amazonaws.com",
+# $broker_port="5672"
+#
+# You can override any definition on initiating the resource.
+
+class keydelivery::server($requirements="/etc/puppet/modules/keydelivery/templates/requirements.txt",
+                       $requirements_template="keydelivery/requirements.txt",
+                       $base_dir="/usr/service/keydelivery",
+                       $src_dir="/usr/service/keydelivery/src",
+                       $virtualenv_dir="/usr/service/keydelivery/venv",
+                       $settings_template="keydelivery/local_dev.py",
+                       $user = "keydelivery",
+                       $group = "keydelivery",
+                       ) {
+
+   file { "/usr/service":
+                ensure => 'directory',
+        }
+
+   Exec {
+     path => '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+   }
+
+   include python::dev
+
+   vcsrepo { "$base_dir":
+       ensure => latest,
+       provider => git,
+       source => 'https://sdp-jenkins:w1ds47bDk1@fisheye.saffrondigital.com/git/SDP-Keyds.git',
+       require => File['/usr/service'],
+       revision => 'develop',
+   }
+
+   #include python::venv
+
+   user { $user:
+      ensure => "present",
+   }
+
+   class { "python::venv":
+           owner => $user,
+           group => $group,
+           require => User[$user],
+   }
+
+   python::venv::isolate { $virtualenv_dir:
+       #requirements => "${base_dir}/requirements.txt",
+       requirements => "/usr/service/keydelivery/requirements.txt",
+       require =>  [ Vcsrepo[$base_dir], Apt::Builddep['python-mysqldb'] ],
+       notify => Exec["${virtualenv_dir}/bin/pip install -Uvr /usr/service/keydelivery/requirements.txt"],
+   }
+
+   exec { "${virtualenv_dir}/bin/pip install -Uvr /usr/service/keydelivery/requirements.txt":
+       path => ["/usr/bin", "/usr/sbin"],
+   }
+
+   file { "${src_dir}/settings/local.py":
+      ensure => "present",
+      replace => true,
+      content => template($settings_template),
+      require => Python::Venv::Isolate[$virtualenv_dir],
+   }
+
+   # Install Gunicorn
+   class { "python::gunicorn": owner => 'www-data', group => 'www-data' }
+
+   python::gunicorn::instance { "django":
+     venv => $virtualenv_dir,
+     src => $src_dir,
+     django => false,
+     wsgi_module => "wsgi",
+     version => "0.14.5",
+     require => [ Class['python::gunicorn'], Python::Venv::Isolate[$virtualenv_dir], ],
+   }
+
+   class { 'nginx': }
+
+   nginx::resource::vhost { 'localhost':
+     ensure   => present,
+     proxy  => 'http://keydelivery',
+   }
+
+   nginx::resource::location { 'localhost-static':
+     ensure   => present,
+     www_root => $base_dir,
+     location => '/static/',
+     vhost    => 'localhost',
+     index_files => undef,
+   }
+
+        nginx::resource::upstream { 'django':
+     ensure  => present,
+          require => [ Service['gunicorn-django'], Python::Gunicorn::Instance['django'], ],
+     members => [
+        "unix:${python::gunicorn::rundir}/django.sock",
+       ]
+   }
+
+   # Development
+   #exec { "${virtualenv_dir}/bin/python ${src_dir}/manage.py collectstatic --noinput":
+   #    require => [ Vcsrepo[$base_dir], Python::Venv::Isolate[$virtualenv_dir] ],
+   #}
+
+}
