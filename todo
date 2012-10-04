@@ -1,1 +1,2 @@
-Swap Puppet for Chef. Rewrite Vagrant stuff. Uninstall Puppet. Rename folder to cookery.
+* Missing guest additions for correct vagrant box.
+* No access to vboxsf because of this...
